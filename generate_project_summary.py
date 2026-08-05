@@ -1,5 +1,5 @@
-from voice_ai.summary import write_project_summary
+from voice_ai.summary import generate_project_summary
 
 if __name__ == "__main__":
-    write_project_summary()
-    print("Projektzusammenfassung in 'PROJECT_SUMMARY.md' aktualisiert.")
+    generate_project_summary()
+    print("Project summary updated in 'PROJECT_SUMMARY.md'.")

@@ -16,13 +16,51 @@ from .stt import STT
 from .tts import TTS
 from .llm import LLM
 from .memory import Memory
-from .prompts import CONVERSATION_PROMPT
+from .prompts import CONVERSATION_PROMPT, get_conversation_prompt
 
 THRESHOLD = 0.02
 MIN_START = 3
 SIL_CHUNKS = 8
 SR = 16000
 BLOCK_MS = 100
+
+_MSG = {
+    "en": {
+        "ready": "[ ready – speak ]",
+        "nothing_recognized": "  (nothing recognized)\n",
+        "you": ">>> You: {text}",
+        "thinking": "  Thinking…",
+        "llm_error": "  [LLM ERROR] {e}",
+        "error": "[ERROR] {e}",
+        "textmode_header": "[Text mode – {date}]",
+        "input_prompt": "\nYou: ",
+        "goodbye": "\nGoodbye!",
+        "state_read_failed": "[WARN] State read failed: {e}",
+        "state_save_failed": "[WARN] State save failed: {e}",
+    },
+    "de": {
+        "ready": "[ bereit – sprich ]",
+        "nothing_recognized": "  (nichts erkannt)\n",
+        "you": ">>> Du: {text}",
+        "thinking": "  Denke…",
+        "llm_error": "  [LLM FEHLER] {e}",
+        "error": "[FEHLER] {e}",
+        "textmode_header": "[Textmodus – {date}]",
+        "input_prompt": "\nDu: ",
+        "goodbye": "\nTschüss!",
+        "state_read_failed": "[WARN] State lesen fehlgeschlagen: {e}",
+        "state_save_failed": "[WARN] State speichern: {e}",
+    },
+}
+
+
+def _t(self, key, **kwargs):
+    lang = getattr(self, "app_language", "en") or "en"
+    template = _MSG.get(lang, _MSG["en"]).get(key, _MSG["en"].get(key, key))
+    try:
+        return template.format(**kwargs)
+    except Exception:
+        return template
 
 
 class VoiceAI:
@@ -86,6 +124,7 @@ class VoiceAI:
         self.tts = TTS(cfg)
         self.llm = LLM(cfg, provider=provider)
         self.memory = Memory()
+        self.app_language = conf.get("app_language", "en")
 
         state = self._load_state()
         if state:
@@ -115,7 +154,7 @@ class VoiceAI:
             try:
                 return json.loads(p.read_text(encoding="utf-8"))
             except Exception as e:
-                print(f"[WARN] State lesen fehlgeschlagen: {e}")
+                print(_t(self, "state_read_failed", e=e))
         return None
 
     def shutdown(self):
@@ -129,7 +168,7 @@ class VoiceAI:
                 "openrouter_model": self.llm.openrouter_model if self.llm.provider == "openrouter" else None,
             }, open(p, "w", encoding="utf-8"), indent=2)
         except Exception as e:
-            print(f"[WARN] State speichern: {e}")
+            print(_t(self, "state_save_failed", e=e))
 
     # ── Audio ─────────────────────────────────────────────────────
 
@@ -185,7 +224,7 @@ class VoiceAI:
     # ── Haupt-Loop ────────────────────────────────────────────────
 
     def _loop(self):
-        print("[ bereit – sprich ]")
+        print(_t(self, "ready"))
 
         while self.running:
             # Phase 1 – Warten auf Sprechbeginn
@@ -232,11 +271,11 @@ class VoiceAI:
                         os.unlink(tmp)
 
                 if not text:
-                    print("  (nichts erkannt)\n")
+                    print(_t(self, "nothing_recognized"))
                     self.speaking = False
                     continue
 
-                print(f"\n>>> Du: {text}")
+                print(_t(self, "you", text=text))
 
                 # Phase 4 – LLM
                 from datetime import datetime as _dt
@@ -247,11 +286,11 @@ class VoiceAI:
                 joined = "\n".join(parts)
                 prompt = (f"{heute}\n{joined}\nHuman: {text}\nAssistant:"
                           if joined else f"{heute}\nHuman: {text}\nAssistant:")
-                print("  Denke…")
+                print(_t(self, "thinking"))
                 try:
-                    reply = self.llm.generate(prompt, CONVERSATION_PROMPT)
+                    reply = self.llm.generate(prompt, get_conversation_prompt(self.app_language))
                 except Exception as e:
-                    print(f"  [LLM FEHLER] {e}")
+                    print(_t(self, "llm_error", e=e))
                     self.speaking = False
                     continue
                 print(f">>> {reply}\n")
@@ -260,7 +299,7 @@ class VoiceAI:
                     self.tts.synthesize(reply)
 
             except Exception as e:
-                print(f"[FEHLER] {e}")
+                print(_t(self, "error", e=e))
             finally:
                 self.speaking = False
 
@@ -269,10 +308,10 @@ class VoiceAI:
     def text_mode(self):
         from datetime import datetime as _dt
         heute = _dt.now().strftime("%A, %d. %B %Y")
-        print(f"[Textmodus – {heute}]")
+        print(_t(self, "textmode_header", date=heute))
         while True:
             try:
-                text = input("\nDu: ")
+                text = input(_t(self, "input_prompt"))
             except (EOFError, KeyboardInterrupt):
                 break
             if text.lower() == "quit":
@@ -283,8 +322,8 @@ class VoiceAI:
             joined = "\n".join(parts)
             prompt = (f"{heute}\n{joined}\nHuman: {text}\nAssistant:"
                       if joined else f"{heute}\nHuman: {text}\nAssistant:")
-            print("Denke…")
-            reply = self.llm.generate(prompt, CONVERSATION_PROMPT)
+            print(_t(self, "thinking"))
+            reply = self.llm.generate(prompt, get_conversation_prompt(self.app_language))
             print(f">>> {reply}")
             self.memory.add_interaction(text, reply)
             if self.llm.provider != "openrouter":
@@ -299,7 +338,7 @@ if __name__ == "__main__":
         while not asst._shutdown.is_set():
             _sd.sleep(1000)
     except KeyboardInterrupt:
-        print("\nTschüss!")
+        print(_t(asst, "goodbye") if asst else "\nGoodbye!")
     finally:
         if asst is not None:
             try:

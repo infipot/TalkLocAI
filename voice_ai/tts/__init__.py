@@ -1,4 +1,4 @@
-﻿"""TTS – sämtliche Engines schreiben nur WAV; Wiedergabe über sounddevice."""
+﻿"""TTS – all engines write WAV; playback via sounddevice."""
 from __future__ import annotations
 
 import json, os, subprocess, sys, tempfile, threading
@@ -11,8 +11,35 @@ except ImportError:
     _sd = None  # type: ignore[assignment]
     _np = None  # type: ignore[assignment]
 
+_MSG = {
+    "en": {
+        "unsupported_sample_width": "Unsupported sample width: {width}",
+        "tts_exception": "[TTS] {exc}",
+        "wav_read_failed": "[TTS] Failed to read WAV: {e}",
+        "output_stream_error": "[TTS] OutputStream: {e}",
+    },
+    "de": {
+        "unsupported_sample_width": "Nicht unterstützte Sample-Breite: {width}",
+        "tts_exception": "[TTS] {exc}",
+        "wav_read_failed": "[TTS] WAV lesen fehlgeschlagen: {e}",
+        "output_stream_error": "[TTS] OutputStream: {e}",
+    },
+}
 
-def _read_wav(path: str):
+
+def _t(self, key, **kwargs):
+    if isinstance(self, str):
+        lang = self or "en"
+    else:
+        lang = getattr(self, "app_language", "en") or "en"
+    template = _MSG.get(lang, _MSG["en"]).get(key, _MSG["en"].get(key, key))
+    try:
+        return template.format(**kwargs)
+    except Exception:
+        return template
+
+
+def _read_wav(path: str, lang: str = "en"):
     import wave
     assert _np is not None
     with wave.open(path, "rb") as wf:
@@ -23,15 +50,15 @@ def _read_wav(path: str):
     if sw == 1:
         d = (_np.frombuffer(raw, dtype=_np.uint8).astype(_np.float32) / 128.0) - 1.0
     elif sw == 2:
-        d = _np.frombuffer(raw, dtype=_np.int16).astype(_np.float32) / 32768.0
+        d = (_np.frombuffer(raw, dtype=_np.int16).astype(_np.float32) / 32768.0)
     elif sw == 3:
-        b = _np.frombuffer(raw, dtype=_np.uint8).reshape(-1, 3)
+        b = (_np.frombuffer(raw, dtype=_np.uint8).reshape(-1, 3))
         p = _np.column_stack([b, _np.zeros(len(b), dtype=_np.uint8)])
         d = p.view(_np.int32).flatten().astype(_np.float32) / 8388608.0
     elif sw == 4:
-        d = _np.frombuffer(raw, dtype=_np.int32).astype(_np.float32) / 2147483648.0
+        d = (_np.frombuffer(raw, dtype=_np.int32).astype(_np.float32) / 2147483648.0)
     else:
-        raise ValueError(f"Nicht unterstützte Sample-Breite: {sw}")
+        raise ValueError(_t(lang, "unsupported_sample_width", width=sw))
     if nc > 1:
         d = d.reshape(-1, nc)
     return d, fr
@@ -45,6 +72,7 @@ class TTS:
         with open(self.cfg_path) as f:
             self.config = json.load(f)
         self.engine = (self.config.get("tts_engine", "system") or "system").lower().strip()
+        self.app_language = self.config.get("app_language", "en")
         self.stop_ev = threading.Event()
         self._play_thr: Optional[threading.Thread] = None
 
@@ -64,7 +92,7 @@ class TTS:
                 if wav and os.path.exists(wav) and not ev.is_set():
                     self._play(wav, ev)
             except Exception as exc:
-                print(f"[TTS] {exc}")
+                print(_t(self, "tts_exception", exc=exc))
             finally:
                 self._play_thr = None
                 if tmp_created and wav_path and os.path.exists(wav_path):
@@ -99,9 +127,9 @@ class TTS:
             _play_fallback(wav_path)
             return
         try:
-            data, sr = _read_wav(wav_path)
+            data, sr = _read_wav(wav_path, self.app_language)
         except Exception as e:
-            print(f"[TTS] WAV lesen fehlgeschlagen: {e}")
+            print(_t(self, "wav_read_failed", e=e))
             _play_fallback(wav_path)
             return
         if data is None or len(data) == 0:
@@ -109,7 +137,7 @@ class TTS:
         try:
             st = _sd.OutputStream(samplerate=sr, channels=data.shape[1] if data.ndim > 1 else 1, dtype=data.dtype, blocksize=1024)
         except Exception as e:
-            print(f"[TTS] OutputStream: {e}")
+            print(_t(self, "output_stream_error", e=e))
             _play_fallback(wav_path)
             return
         st.start()

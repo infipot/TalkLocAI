@@ -10,3 +10,13 @@ CONVERSATION_PROMPT = """You are a helpful AI voice assistant.
 Respond naturally and concisely. Match the language of the user.
 No markdown, bold, italics, asterisks — plain text only.
 No meta-commentary. Answer directly without reading back their words."""
+
+
+def get_conversation_prompt(language: str = "en") -> str:
+    lang = (language or "en").strip().lower()
+    if lang == "de":
+        instruction = "Respond in German."
+    else:
+        instruction = "Respond in English."
+    return f"""{instruction}
+{CONVERSATION_PROMPT}"""

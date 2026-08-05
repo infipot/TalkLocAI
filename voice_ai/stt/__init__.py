@@ -27,7 +27,7 @@ class STT:
             else:
                 model_name = "small"
 
-        self.language = self.config.get("whisper_language") or None
+        self.language = self.config.get("whisper_language") or self.config.get("app_language") or None
         self.task = self.config.get("whisper_task", "transcribe")
         self.vad_filter = self.config.get("whisper_vad_filter", False)
         self.beam_size = self.config.get("whisper_beam_size", 1)
