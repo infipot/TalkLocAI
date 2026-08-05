@@ -1,7 +1,7 @@
 ﻿"""TTS – sämtliche Engines schreiben nur WAV; Wiedergabe über sounddevice."""
 from __future__ import annotations
 
-import json, os, subprocess, sys, threading
+import json, os, subprocess, sys, tempfile, threading
 from typing import Optional
 
 try:
@@ -48,23 +48,34 @@ class TTS:
         self.stop_ev = threading.Event()
         self._play_thr: Optional[threading.Thread] = None
 
-    def synthesize(self, text: str, out: str = "response.wav") -> str:
+    def synthesize(self, text: str, out: Optional[str] = None) -> str:
         self.stop_ev.clear()
         ev = self.stop_ev
 
         def _work():
+            wav_path = out
+            tmp_created = False
             try:
-                wav = self._gen_wav(text, out)
+                if wav_path is None:
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                        wav_path = tmp.name
+                    tmp_created = True
+                wav = self._gen_wav(text, wav_path)
                 if wav and os.path.exists(wav) and not ev.is_set():
                     self._play(wav, ev)
             except Exception as exc:
                 print(f"[TTS] {exc}")
             finally:
                 self._play_thr = None
+                if tmp_created and wav_path and os.path.exists(wav_path):
+                    try:
+                        os.remove(wav_path)
+                    except Exception:
+                        pass
 
         self._play_thr = threading.Thread(target=_work, daemon=True)
         self._play_thr.start()
-        return out
+        return out or ""
 
     def stop(self):
         self.stop_ev.set()

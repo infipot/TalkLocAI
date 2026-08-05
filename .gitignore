@@ -57,6 +57,7 @@ ehthumbs.db
 *.wav
 
 # Local runtime state
+voice_ai/config/config.json
 voice_ai/state.json
 
 # Auto-generated documentation

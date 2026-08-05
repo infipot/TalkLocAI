@@ -127,7 +127,6 @@ class VoiceAI:
                 "provider": self.llm.provider,
                 "local_model": self.llm.local_model if self.llm.provider == "local" else None,
                 "openrouter_model": self.llm.openrouter_model if self.llm.provider == "openrouter" else None,
-                "memory_history": [],
             }, open(p, "w", encoding="utf-8"), indent=2)
         except Exception as e:
             print(f"[WARN] State speichern: {e}")
@@ -258,7 +257,7 @@ class VoiceAI:
                 print(f">>> {reply}\n")
                 self.memory.add_interaction(text, reply)
                 if self.llm.provider != "openrouter":
-                    self.tts.synthesize(reply, "response.wav")
+                    self.tts.synthesize(reply)
 
             except Exception as e:
                 print(f"[FEHLER] {e}")
@@ -289,7 +288,7 @@ class VoiceAI:
             print(f">>> {reply}")
             self.memory.add_interaction(text, reply)
             if self.llm.provider != "openrouter":
-                self.tts.synthesize(reply, "response.wav")
+                self.tts.synthesize(reply)
 
 
 if __name__ == "__main__":
