@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyo
+*.egg
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing / Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Environment files – ignore all except .env.example
+.env
+.env.*
+!.env.example
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vs/
+.vim/
+.nvim/
+.history/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+Desktop.ini
+ehthumbs.db
+.AppleDouble
+.LSOverride
+
+# Generated audio / output files
+*.wav
+
+# Local runtime state
+voice_ai/state.json
+
+# Auto-generated documentation
+PROJECT_SUMMARY.md
+
+# Tool configs (machine/session-specific)
+.kilo/
+.continue/
+
+# Local config variant (test/placeholder keys)
+voice_ai_cfg/
