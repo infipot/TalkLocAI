@@ -16,7 +16,7 @@ from .stt import STT
 from .tts import TTS
 from .llm import LLM
 from .memory import Memory
-from .prompts import CONVERSATION_PROMPT, get_conversation_prompt
+from .prompts import CONVERSATION_PROMPT
 
 THRESHOLD = 0.02
 MIN_START = 3
@@ -37,6 +37,8 @@ _MSG = {
         "goodbye": "\nGoodbye!",
         "state_read_failed": "[WARN] State read failed: {e}",
         "state_save_failed": "[WARN] State save failed: {e}",
+        "ready_notification": "Ready. You can speak now.",
+        "openrouter_timeout": "OpenRouter took too long to respond. Please try again.",
     },
     "de": {
         "ready": "[ bereit – sprich ]",
@@ -50,6 +52,8 @@ _MSG = {
         "goodbye": "\nTschüss!",
         "state_read_failed": "[WARN] State lesen fehlgeschlagen: {e}",
         "state_save_failed": "[WARN] State speichern: {e}",
+        "ready_notification": "Bereit. Du kannst jetzt sprechen.",
+        "openrouter_timeout": "OpenRouter hat zu lange zum Antworten benötigt. Bitte versuche es erneut.",
     },
 }
 
@@ -142,6 +146,7 @@ class VoiceAI:
         self.q = queue.Queue()
         # Counter for detecting sustained speech to interrupt TTS (prevents false positives)
         self._tts_interrupt_run = 0
+        self._ready_notified = False
 
         threading.Thread(target=self._audio_worker, daemon=True).start()
         threading.Thread(target=self._loop, daemon=True).start()
@@ -226,6 +231,10 @@ class VoiceAI:
     def _loop(self):
         print(_t(self, "ready"))
 
+        if not self._ready_notified:
+            self.tts.synthesize(_t(self, "ready_notification"))
+            self._ready_notified = True
+
         while self.running:
             # Phase 1 – Warten auf Sprechbeginn
             pre = []; run = 0
@@ -265,7 +274,8 @@ class VoiceAI:
                     tmp = f.name
                 try:
                     sf.write(tmp, audio, SR)
-                    text = self.stt.transcribe(tmp).strip()
+                    text, detected_lang = self.stt.transcribe(tmp)
+                    text = text.strip()
                 finally:
                     if os.path.exists(tmp):
                         os.unlink(tmp)
@@ -287,16 +297,19 @@ class VoiceAI:
                 prompt = (f"{heute}\n{joined}\nHuman: {text}\nAssistant:"
                           if joined else f"{heute}\nHuman: {text}\nAssistant:")
                 print(_t(self, "thinking"))
+                conversation_lang = detected_lang or self.app_language
                 try:
-                    reply = self.llm.generate(prompt, get_conversation_prompt(self.app_language))
+                    reply = self.llm.generate(prompt, CONVERSATION_PROMPT)
                 except Exception as e:
                     print(_t(self, "llm_error", e=e))
                     self.speaking = False
                     continue
                 print(f">>> {reply}\n")
                 self.memory.add_interaction(text, reply)
-                if self.llm.provider != "openrouter":
+                try:
                     self.tts.synthesize(reply)
+                except Exception as e:
+                    print(_t(self, "error", e=e))
 
             except Exception as e:
                 print(_t(self, "error", e=e))
@@ -323,11 +336,13 @@ class VoiceAI:
             prompt = (f"{heute}\n{joined}\nHuman: {text}\nAssistant:"
                       if joined else f"{heute}\nHuman: {text}\nAssistant:")
             print(_t(self, "thinking"))
-            reply = self.llm.generate(prompt, get_conversation_prompt(self.app_language))
+            reply = self.llm.generate(prompt, CONVERSATION_PROMPT)
             print(f">>> {reply}")
             self.memory.add_interaction(text, reply)
-            if self.llm.provider != "openrouter":
+            try:
                 self.tts.synthesize(reply)
+            except Exception as e:
+                print(_t(self, "error", e=e))
 
 
 if __name__ == "__main__":

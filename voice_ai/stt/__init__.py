@@ -27,7 +27,7 @@ class STT:
             else:
                 model_name = "small"
 
-        self.language = self.config.get("whisper_language") or self.config.get("app_language") or None
+        self.language = self.config.get("whisper_language") or None
         self.task = self.config.get("whisper_task", "transcribe")
         self.vad_filter = self.config.get("whisper_vad_filter", False)
         self.beam_size = self.config.get("whisper_beam_size", 1)
@@ -41,8 +41,8 @@ class STT:
 
         self.model = WhisperModel(model_name, device=device)
 
-    def transcribe(self, audio_path: str) -> str:
-        segments, _ = self.model.transcribe(
+    def transcribe(self, audio_path: str) -> tuple[str, str | None]:
+        segments, info = self.model.transcribe(
             audio_path,
             language=self.language,
             task=self.task,
@@ -53,4 +53,5 @@ class STT:
             no_speech_threshold=self.no_speech_threshold,
             temperature=self.temperature
         )
-        return " ".join([s.text for s in segments])
+        detected_language = getattr(info, "language", None)
+        return " ".join([s.text for s in segments]), detected_language

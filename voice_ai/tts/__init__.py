@@ -72,6 +72,8 @@ class TTS:
         with open(self.cfg_path) as f:
             self.config = json.load(f)
         self.engine = (self.config.get("tts_engine", "system") or "system").lower().strip()
+        if self.engine == "system":
+            self.engine = "windows"
         self.app_language = self.config.get("app_language", "en")
         self.stop_ev = threading.Event()
         self._play_thr: Optional[threading.Thread] = None
@@ -243,8 +245,8 @@ def _synth_system(text: str, out: str, cfg: dict) -> Optional[str]:
     return out if os.path.exists(out) else None
 
 
-def _get_windows_sapi_voices() -> list[str]:
-    """Get list of available Windows SAPI voices."""
+def get_windows_voices() -> list[tuple[str, str]]:
+    """Return list of (friendly_name, voice_id) tuples for all installed Windows SAPI voices."""
     voices = []
     try:
         import comtypes.client as cc
@@ -265,7 +267,7 @@ def _get_windows_sapi_voices() -> list[str]:
             for i in range(count):
                 voice = voice_collection.Item(i)
                 desc = voice.GetDescription()
-                voices.append(desc)
+                voices.append((desc, desc))
         except Exception:
             pass
         finally:
@@ -278,7 +280,32 @@ def _get_windows_sapi_voices() -> list[str]:
     return voices
 
 
-def _get_piper_voices() -> list[str]:
+def get_default_windows_voice() -> str:
+    """Return the friendly name of the current Windows default TTS voice."""
+    try:
+        import comtypes.client as cc
+        import pythoncom as pc
+        try:
+            import comtypes.gen.SpeechLib as sl  # type: ignore[import-untyped]
+        except ImportError:
+            try:
+                cc.GetModule("SAPI.SpVoice")
+                import comtypes.gen.SpeechLib as sl  # type: ignore[import-untyped]
+            except Exception:
+                return ""
+        pc.CoInitialize()
+        try:
+            sp = cc.CreateObject("SAPI.SpVoice")
+            voice = sp.GetVoice()
+            desc = voice.GetDescription()
+            return desc
+        finally:
+            pc.CoUninitialize()
+    except Exception:
+        return ""
+
+
+def get_piper_voices() -> list[str]:
     """Discover available Piper voices from the piper-voices directory."""
     voices = []
     voice_dir = os.path.expanduser("~/.local/share/piper-voices")

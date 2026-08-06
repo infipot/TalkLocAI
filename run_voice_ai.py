@@ -6,6 +6,7 @@ import json
 import time
 import urllib.request
 from urllib.parse import urlparse, urlunparse
+from typing import TYPE_CHECKING
 
 messagebox = None
 try:
@@ -14,6 +15,11 @@ try:
 except ImportError:
     tk = None
     messagebox = None
+
+if TYPE_CHECKING:
+    from tkinter import Widget
+else:
+    Widget = object
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 VOICE_AI_DIR = os.path.join(ROOT_DIR, 'voice_ai')
@@ -45,15 +51,17 @@ _GUI = {
         "status_available": "✓ LM Studio available, model: {model}",
         "status_no_model": "⚠ LM Studio available, but NO model loaded.",
         "status_unavailable": "✗ Local LM Studio not available.",
+        "status_unavailable_fallback": "✗ Local LM Studio not available. Configured model: {model}",
         "openrouter_model_label": "OpenRouter model: {model}",
         "openrouter_fallback": "If no local model is loaded, OpenRouter will be used.",
+        "ui_language_label": "UI Language:",
         "whisper_label": "Whisper Model (STT):",
-        "tts_label": "TTS Engine:",
+        "tts_label": "TTS Provider:",
         "piper_label": "Piper Voice:",
         "no_piper_voices": "(No Piper voices found)",
         "piper_unavailable": "(Piper not available)",
         "windows_label": "Windows Voice:",
-        "no_sapi_voices": "(No SAPI voices found)",
+        "no_sapi_voices": "(No Windows voices found)",
         "sapi_unavailable": "(SAPI not available)",
         "local_not_found": "Local LM Studio not found.",
         "summary_warn": "Warning: Project summary could not be updated: {e}",
@@ -69,15 +77,17 @@ _GUI = {
         "status_available": "✓ LM Studio verfuegbar, Modell: {model}",
         "status_no_model": "⚠ LM Studio verfuegbar, aber KEIN Modell geladen.",
         "status_unavailable": "✗ Lokales LM Studio nicht verfuegbar.",
+        "status_unavailable_fallback": "✗ Lokales LM Studio nicht verfuegbar. Konfiguriertes Modell: {model}",
         "openrouter_model_label": "OpenRouter Modell: {model}",
         "openrouter_fallback": "Falls lokal kein Modell geladen ist, wird OpenRouter verwendet.",
+        "ui_language_label": "Sprache der Benutzeroberfläche:",
         "whisper_label": "Whisper Modell (STT):",
-        "tts_label": "TTS Engine:",
+        "tts_label": "TTS-Anbieter:",
         "piper_label": "Piper Stimme:",
         "no_piper_voices": "(Keine Piper Stimmen gefunden)",
         "piper_unavailable": "(Piper nicht verfuegbar)",
         "windows_label": "Windows Stimme:",
-        "no_sapi_voices": "(Keine SAPI Stimmen gefunden)",
+        "no_sapi_voices": "(Keine Windows Stimmen gefunden)",
         "sapi_unavailable": "(SAPI nicht verfuegbar)",
         "local_not_found": "Lokales LM Studio nicht gefunden.",
         "summary_warn": "Warnung: Projektzusammenfassung konnte nicht aktualisiert werden: {e}",
@@ -122,7 +132,7 @@ def _normalize(base_url: str) -> str:
     return urlunparse(p._replace(path=path or '/'))
 
 
-def _probe_local_lm(base_url: str):
+def _probe_local_lm(base_url: str, fallback_model: str = ""):
     candidates = [_normalize(base_url)]
     try:
         parsed = urlparse(base_url)
@@ -132,27 +142,51 @@ def _probe_local_lm(base_url: str):
             candidates.append(urlunparse(parsed._replace(netloc=f"{h}:1234", path='/')))
     except Exception:
         pass
-    for ep in ["/api/v1/models", "/v1/models", "/models"]:
+    for ep in ["/api/status", "/api/v1/models", "/v1/models", "/models"]:
         for base in candidates:
             base = _normalize(base)
             try:
                 url = f"{base.rstrip('/')}/{ep.lstrip('/')}"
                 with urllib.request.urlopen(url, timeout=2) as resp:
                     d = json.loads(resp.read().decode('utf-8'))
-                items = d.get("data", d.get("models", [d]))
-                cnt = len(items) if isinstance(items, list) else 1
-                cur = None
-                for it in (items if isinstance(items, list) else [items]):
-                    if isinstance(it, dict):
-                        if it.get("selected_variant"):
-                            cur = it["selected_variant"]; break
-                        li = it.get("loaded_instances", [])
-                        if li:
-                            cur = it.get("key") or it.get("id"); break
-                if cnt > 0:
-                    return True, cnt, cur or "Unbekannt", url
+                if ep == "/api/status":
+                    model_info = d.get("model") or d.get("Model") or {}
+                    if isinstance(model_info, dict):
+                        loaded = (
+                            model_info.get("loaded_model")
+                            or model_info.get("loadedModel")
+                            or model_info.get("id")
+                            or model_info.get("key")
+                        )
+                        if loaded:
+                            return True, 1, loaded, url
+                    if isinstance(d.get("model"), str):
+                        return True, 1, d["model"], url
+                else:
+                    items = d.get("data", d.get("models", [d]))
+                    if not items:
+                        continue
+                    cnt = len(items) if isinstance(items, list) else 1
+                    cur = None
+                    if isinstance(items, list):
+                        for it in items:
+                            if isinstance(it, dict):
+                                li = it.get("loaded_instances")
+                                if li and li > 0:
+                                    cur = it.get("id") or it.get("key")
+                                    break
+                        if cur is None:
+                            first = next((it for it in items if isinstance(it, dict)), None)
+                            if first:
+                                cur = first.get("id") or first.get("key")
+                    elif isinstance(items, dict):
+                        cur = items.get("id") or items.get("key")
+                    if cur:
+                        return True, cnt, cur, url
             except Exception:
                 continue
+    if fallback_model:
+        return False, 0, fallback_model, ""
     return False, 0, "", ""
 
 
@@ -169,33 +203,57 @@ def _choose_provider() -> tuple[str, str]:
     piper_voice = cfg.get("piper_voice", "")
 
     if tk is None:
-        avail, cnt, cur_mod, src = _probe_local_lm(local_base)
+        avail, cnt, cur_mod, src = _probe_local_lm(local_base, fallback_model=cfg.get("local_lm_model", "").strip())
         return ("local" if avail and prov != "openrouter" else "openrouter"), local_base
 
-    root = tk.Tk()
-    lang_var = tk.StringVar(value=app_language)
+    root = tk.Tk()  # type: ignore[attr-defined]
+    lang_var = tk.StringVar(value=app_language)  # type: ignore[attr-defined]
     root.title(_txt(lang_var, "window_title"))
     root.geometry("550x500")
     root.resizable(False, False)
-    sel = tk.StringVar(value="local")
-    url_var = tk.StringVar(value=local_base)
-    whisper_var = tk.StringVar(value=whisper_model)
-    voice_var = tk.StringVar(value=windows_voice)
-    tts_engine_var = tk.StringVar(value=tts_engine)
-    piper_voice_var = tk.StringVar(value=piper_voice)
-    f = tk.Frame(root, padx=16, pady=16); f.pack(fill="both", expand=True)
-    tk.Label(f, text=_txt(lang_var, "choose_mode"), font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
-    tk.Radiobutton(f, text=_txt(lang_var, "local_radio"), variable=sel, value="local").pack(anchor="w", pady=(8, 0))
-    tk.Radiobutton(f, text=_txt(lang_var, "openrouter_radio"), variable=sel, value="openrouter").pack(anchor="w", pady=(2, 16))
-    tk.Label(f, text=_txt(lang_var, "local_url_label")).pack(anchor="w")
-    tk.Entry(f, textvariable=url_var, width=52).pack(anchor="w", pady=(0, 8))
+    sel = tk.StringVar(value="local")  # type: ignore[attr-defined]
+    url_var = tk.StringVar(value=local_base)  # type: ignore[attr-defined]
+    whisper_var = tk.StringVar(value=whisper_model)  # type: ignore[attr-defined]
+    voice_var = tk.StringVar(value=windows_voice)  # type: ignore[attr-defined]
+    tts_engine_var = tk.StringVar(value=tts_engine)  # type: ignore[attr-defined]
+    piper_voice_var = tk.StringVar(value=piper_voice)  # type: ignore[attr-defined]
+    f = tk.Frame(root, padx=16, pady=16); f.pack(fill="both", expand=True)  # type: ignore[attr-defined]
 
-    status_label = tk.Label(f, text="", fg="gray")
+    widget_refs: list[tuple[Widget, str, dict]] = []
+
+    def _set_text(w: Widget, key: str, **kwargs):
+        w.config(text=_txt(lang_var, key, **kwargs))  # type: ignore[call-arg]
+
+    def _refresh_gui():
+        for w, key, kwargs in widget_refs:
+            _set_text(w, key, **kwargs)
+
+    lang_var.trace_add("write", lambda *_: _refresh_gui())
+
+    def _add_label(parent, key, **kwargs):
+        w = tk.Label(parent, text=_txt(lang_var, key, **kwargs))  # type: ignore[attr-defined]
+        widget_refs.append((w, key, kwargs))
+        return w
+
+    def _add_button(parent, key, **kwargs):
+        w = tk.Button(parent, text=_txt(lang_var, key), **kwargs)  # type: ignore[attr-defined]
+        widget_refs.append((w, key, {}))
+        return w
+
+    tk.Label(f, text=_txt(lang_var, "choose_mode"), font=("TkDefaultFont", 12, "bold")).pack(anchor="w")  # type: ignore[attr-defined]
+    tk.Radiobutton(f, text=_txt(lang_var, "local_radio"), variable=sel, value="local").pack(anchor="w", pady=(8, 0))  # type: ignore[attr-defined]
+    tk.Radiobutton(f, text=_txt(lang_var, "openrouter_radio"), variable=sel, value="openrouter").pack(anchor="w", pady=(2, 16))  # type: ignore[attr-defined]
+    _add_label(f, "local_url_label").pack(anchor="w")
+    tk.Entry(f, textvariable=url_var, width=52).pack(anchor="w", pady=(0, 8))  # type: ignore[attr-defined]
+
+    status_label = tk.Label(f, text="", fg="gray")  # type: ignore[attr-defined]
     status_label.pack(anchor="w")
 
     def update_status():
         url = url_var.get().strip() or local_base
-        avail, cnt, cur_mod, src = _probe_local_lm(url)
+        cfg = _load_config()
+        fallback_model = cfg.get("local_lm_model", "").strip()
+        avail, cnt, cur_mod, src = _probe_local_lm(url, fallback_model=fallback_model)
         if avail:
             if cur_mod and cur_mod != "Unbekannt":
                 st = _txt(lang_var, "status_available", model=cur_mod)
@@ -204,81 +262,87 @@ def _choose_provider() -> tuple[str, str]:
                 st = _txt(lang_var, "status_no_model")
                 fg = "orange"
         else:
-            st = _txt(lang_var, "status_unavailable")
-            fg = "red"
-        status_label.config(text=st, fg=fg)
+            if fallback_model:
+                st = _txt(lang_var, "status_unavailable_fallback", model=fallback_model)
+                fg = "orange"
+            else:
+                st = _txt(lang_var, "status_unavailable")
+                fg = "red"
+        status_label.config(text=st, fg=fg)  # type: ignore[call-arg]
         return avail
 
-    tk.Label(f, text=_txt(lang_var, "openrouter_model_label", model=openrouter_model), fg="blue").pack(anchor="w", pady=(8, 0))
-    tk.Label(f, text=_txt(lang_var, "openrouter_fallback"), fg="gray", font=("TkDefaultFont", 8)).pack(anchor="w")
+    _add_label(f, "openrouter_model_label", model=openrouter_model, fg="blue").pack(anchor="w", pady=(8, 0))
+    _add_label(f, "openrouter_fallback", fg="gray", font=("TkDefaultFont", 8)).pack(anchor="w")
 
-    tk.Label(f, text="App / Conversation Language:").pack(anchor="w", pady=(8, 0))
-    lang_frame = tk.Frame(f)
+    _add_label(f, "ui_language_label").pack(anchor="w", pady=(8, 0))
+    lang_frame = tk.Frame(f)  # type: ignore[attr-defined]
     lang_frame.pack(anchor="w")
     lang_options = ["en", "de"]
-    lang_menu = tk.OptionMenu(lang_frame, lang_var, *lang_options)
+    lang_menu = tk.OptionMenu(lang_frame, lang_var, *lang_options)  # type: ignore[attr-defined]
     lang_menu.pack(side="left")
 
-    tk.Label(f, text=_txt(lang_var, "whisper_label")).pack(anchor="w", pady=(8, 0))
-    whisper_frame = tk.Frame(f)
+    _add_label(f, "whisper_label").pack(anchor="w", pady=(8, 0))
+    whisper_frame = tk.Frame(f)  # type: ignore[attr-defined]
     whisper_frame.pack(anchor="w")
     whisper_options = ["auto", "tiny", "base", "small", "medium", "large", "large-v2", "large-v3"]
-    whisper_menu = tk.OptionMenu(whisper_frame, whisper_var, *whisper_options)
+    whisper_menu = tk.OptionMenu(whisper_frame, whisper_var, *whisper_options)  # type: ignore[attr-defined]
     whisper_menu.pack(side="left")
 
     if os.name == "nt":
-        tk.Label(f, text=_txt(lang_var, "tts_label")).pack(anchor="w", pady=(8, 0))
-        tts_frame = tk.Frame(f)
+        _add_label(f, "tts_label").pack(anchor="w", pady=(8, 0))
+        tts_frame = tk.Frame(f)  # type: ignore[attr-defined]
         tts_frame.pack(anchor="w")
-        tts_options = ["piper", "system"]
-        tts_menu = tk.OptionMenu(tts_frame, tts_engine_var, *tts_options)
+        tts_options = ["windows", "piper"]
+        tts_menu = tk.OptionMenu(tts_frame, tts_engine_var, *tts_options)  # type: ignore[attr-defined]
         tts_menu.pack(side="left")
 
+        voice_selector_frame = tk.Frame(f)  # type: ignore[attr-defined]
+        voice_selector_frame.pack(anchor="w", pady=(4, 0))
+
         def update_voice_selector():
-            assert tk is not None
             for w in voice_selector_frame.winfo_children():
                 w.destroy()
             engine = tts_engine_var.get()
             if engine == "piper":
-                tk.Label(voice_selector_frame, text=_txt(lang_var, "piper_label")).pack(side="left")
+                _add_label(voice_selector_frame, "piper_label").pack(side="left")
                 try:
-                    from voice_ai.tts import _get_piper_voices
-                    piper_voices = _get_piper_voices()
+                    from voice_ai.tts import get_piper_voices
+                    piper_voices = get_piper_voices()
                     if piper_voices:
-                        piper_var = tk.StringVar(value=piper_voice_var.get() or piper_voices[0])
-                        piper_menu = tk.OptionMenu(voice_selector_frame, piper_var, *piper_voices)
+                        piper_var = tk.StringVar(value=piper_voice_var.get() or piper_voices[0])  # type: ignore[attr-defined]
+                        piper_menu = tk.OptionMenu(voice_selector_frame, piper_var, *piper_voices)  # type: ignore[attr-defined]
                         piper_menu.pack(side="left")
                         def _save_piper(*args):
                             piper_voice_var.set(piper_var.get())
                         piper_var.trace_add("write", _save_piper)
                     else:
-                        tk.Label(voice_selector_frame, text=_txt(lang_var, "no_piper_voices"), fg="gray").pack(side="left")
+                        _add_label(voice_selector_frame, "no_piper_voices", fg="gray").pack(side="left")
                 except Exception:
-                    tk.Label(voice_selector_frame, text=_txt(lang_var, "piper_unavailable"), fg="gray").pack(side="left")
-            elif engine == "system":
-                tk.Label(voice_selector_frame, text=_txt(lang_var, "windows_label")).pack(side="left")
+                    _add_label(voice_selector_frame, "piper_unavailable", fg="gray").pack(side="left")
+            elif engine == "windows":
+                _add_label(voice_selector_frame, "windows_label").pack(side="left")
                 try:
-                    from voice_ai.tts import _get_windows_sapi_voices
-                    sapi_voices = _get_windows_sapi_voices()
+                    from voice_ai.tts import get_windows_voices
+                    sapi_voices = get_windows_voices()
                     if sapi_voices:
-                        voice_options = [""] + sapi_voices
-                        voice_menu = tk.OptionMenu(voice_selector_frame, voice_var, *voice_options)
+                        voice_options = [""] + [v[0] for v in sapi_voices]
+                        voice_menu = tk.OptionMenu(voice_selector_frame, voice_var, *voice_options)  # type: ignore[attr-defined]
                         voice_menu.pack(side="left")
                     else:
-                        tk.Label(voice_selector_frame, text=_txt(lang_var, "no_sapi_voices"), fg="gray").pack(side="left")
+                        _add_label(voice_selector_frame, "no_sapi_voices", fg="gray").pack(side="left")
                 except Exception:
-                    tk.Label(voice_selector_frame, text=_txt(lang_var, "sapi_unavailable"), fg="gray").pack(side="left")
+                    _add_label(voice_selector_frame, "sapi_unavailable", fg="gray").pack(side="left")
 
-        voice_selector_frame = tk.Frame(f)
-        voice_selector_frame.pack(anchor="w", pady=(4, 0))
         tts_engine_var.trace_add("write", lambda *a: update_voice_selector())
         update_voice_selector()
 
     def go():
         url = url_var.get().strip() or local_base
         if sel.get() == "local":
-            av, _, _, _ = _probe_local_lm(url)
-            if not av and messagebox:
+            cfg = _load_config()
+            fallback_model = cfg.get("local_lm_model", "").strip()
+            av, _, _, _ = _probe_local_lm(url, fallback_model=fallback_model)
+            if not av and not fallback_model and messagebox:
                 messagebox.showwarning("Voice AI", _txt(lang_var, "local_not_found"))
                 return
         cfg = _load_config()
@@ -286,7 +350,6 @@ def _choose_provider() -> tuple[str, str]:
         cfg["tts_engine"] = tts_engine_var.get()
         cfg["piper_voice"] = piper_voice_var.get()
         cfg["app_language"] = lang_var.get()
-        cfg["whisper_language"] = lang_var.get()
         if os.name == "nt":
             cfg["windows_voice"] = voice_var.get()
         try:
@@ -295,14 +358,14 @@ def _choose_provider() -> tuple[str, str]:
         except Exception:
             pass
         root.destroy()
-    
-    btn_frame = tk.Frame(f)
+
+    btn_frame = tk.Frame(f)  # type: ignore[attr-defined]
     btn_frame.pack(anchor="e", pady=(14, 0))
-    tk.Button(btn_frame, text=_txt(lang_var, "refresh"), command=update_status, width=10).pack(side="right", padx=(5, 0))
-    tk.Button(btn_frame, text=_txt(lang_var, "start"), command=go, width=14, bg="#2e7d32", fg="white").pack(side="right")
-    
+    _add_button(btn_frame, "refresh", command=update_status, width=10).pack(side="right", padx=(5, 0))
+    _add_button(btn_frame, "start", command=go, width=14, bg="#2e7d32", fg="white").pack(side="right")
+
     root.protocol("WM_DELETE_WINDOW", lambda: root.destroy())
-    
+
     update_status()
     root.mainloop()
     return sel.get(), url_var.get().strip() or local_base
